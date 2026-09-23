@@ -1,0 +1,26 @@
+name: Get firmware
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Firmware download link
+        required: true
+permissions:
+  contents: write
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download firmware
+        env:
+          FW_URL: ${{ inputs.url }}
+        run: |
+          curl -L --fail -A "Mozilla/5.0" -o firmware.bin "$FW_URL"
+          ls -lh firmware.bin
+          file firmware.bin
+          size=$(stat -c%s firmware.bin)
+          if [ "$size" -lt 100000000 ]; then echo "File too small - link probably needs login or expired"; exit 1; fi
+      - name: Save as release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create firmware firmware.bin --repo "${{ github.repository }}" --title Firmware --notes "Tiger firmware"
