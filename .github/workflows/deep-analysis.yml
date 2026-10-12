@@ -1,0 +1,74 @@
+name: Tiger Firmware Deep Analysis
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Download firmware
+        run: |
+          curl -fL --retry 3 -o firmware.bin 'https://github.com/rashed306/Tiger-firmware/releases/download/firmware/firmware.bin'
+          test -s firmware.bin
+      - name: Analyze headers, entropy, signatures and strings
+        shell: bash
+        run: |
+          mkdir -p report
+          cat > inspect.py <<'PY'
+          import os, math, hashlib, collections, re, struct
+          p='firmware.bin'
+          size=os.path.getsize(p)
+          out=[]
+          def emit(s=''): out.append(str(s))
+          emit('Tiger firmware deep static analysis')
+          emit('Size: '+str(size))
+          with open(p,'rb') as f:
+              emit('SHA256: '+hashlib.file_digest(f,'sha256').hexdigest())
+              f.seek(0)
+              emit('First 512 bytes: '+f.read(512).hex(' '))
+              offsets=sorted(set([0,512,4096,65536,1048576,size//4,size//2,3*size//4,max(0,size-1048576)]))
+              for off in offsets:
+                  f.seek(off)
+                  data=f.read(min(1024*1024,size-off))
+                  if not data: continue
+                  counts=collections.Counter(data)
+                  entropy=-sum((n/len(data))*math.log2(n/len(data)) for n in counts.values())
+                  printable=sum(32<=c<127 for c in data)/len(data)
+                  emit(f'Offset {off}: entropy={entropy:.5f}/8 printable_fraction={printable:.5f} zero_fraction={counts[0]/len(data):.5f}')
+              emit('Selected known signatures (sampled at 4 MiB intervals; not an exhaustive scan):')
+              sigs={b'ANDROID!':'Android boot',b'AVB0':'AVB',b'hsqs':'SquashFS LE',b'sqsh':'SquashFS BE',b'\x3a\xff\x26\xed':'Android sparse',b'\xe2\xe1\xf5\xe0':'EROFS',b'\x7fELF':'ELF',b'PK\x03\x04':'ZIP',b'ustar':'TAR',b'CrAU':'Android payload',b'UBI#':'UBI'}
+              found=0
+              for off in range(0,size,4*1024*1024):
+                  f.seek(off)
+                  buf=f.read(min(4*1024*1024+512,size-off))
+                  for magic,label in sigs.items():
+                      pos=buf.find(magic)
+                      if pos>=0 and pos<4*1024*1024:
+                          emit(f'{label}: offset {off+pos}')
+                          found+=1
+                          if found>=150: break
+                  if found>=150: break
+              if not found: emit('None in sampled windows')
+              emit('ASCII strings of length >= 10 from first, middle, and last 4 MiB (up to 80 each):')
+              for off in [0,size//2,max(0,size-4*1024*1024)]:
+                  f.seek(off)
+                  data=f.read(4*1024*1024)
+                  strings=re.findall(rb'[\x20-\x7e]{10,}',data)
+                  emit(f'At offset {off}: {len(strings)} candidates')
+                  for s in strings[:80]: emit(repr(s[:160]))
+          with open('report/deep-analysis.txt','w') as o: o.write('\n'.join(out)+'\n')
+          print('\n'.join(out[:55]))
+          PY
+          python3 inspect.py
+      - name: Upload analysis report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiger-firmware-deep-analysis
+          path: report/
+          if-no-files-found: warn
