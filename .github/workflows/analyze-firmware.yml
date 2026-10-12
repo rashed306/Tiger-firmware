@@ -1,0 +1,51 @@
+name: Analyze Tiger Firmware
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y binwalk p7zip-full file xz-utils squashfs-tools
+      - name: Download release firmware
+        run: |
+          curl --fail --location --retry 3 --output firmware.bin \
+            "https://github.com/rashed306/Tiger-firmware/releases/download/firmware/firmware.bin"
+          ls -lh firmware.bin
+      - name: Identify and scan firmware
+        shell: bash
+        run: |
+          mkdir -p report
+          {
+            echo "Tiger firmware static identification"
+            date -u
+            echo
+            file firmware.bin
+            stat -c 'Bytes: %s' firmware.bin
+            sha256sum firmware.bin
+            echo
+            echo "First 256 bytes:"
+            xxd -l 256 firmware.bin
+            echo
+            echo "Archive test:"
+            7z l firmware.bin 2>&1 | head -100 || true
+            echo
+            echo "Binwalk signatures:"
+            binwalk firmware.bin 2>&1 | head -350 || true
+          } > report/firmware-report.txt
+          cat report/firmware-report.txt
+      - name: Upload diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiger-firmware-diagnostics
+          path: report/
+          if-no-files-found: warn
